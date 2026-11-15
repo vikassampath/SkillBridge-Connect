@@ -82,7 +82,7 @@ Install the following before running the project:
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/beingvicky/SkillBridge-Connect.git
+git clone https://github.com/vikassampath/SkillBridge-Connect.git
 cd SkillBridge-Connect
 ```
 
@@ -113,7 +113,10 @@ DB_PORT=3306
 DB_USER=root
 DB_PASS=your_mysql_password
 DB_NAME=skillbridge
-JWT_SECRET=your_jwt_secret
+JWT_SECRET=replace-with-a-long-random-secret
+ADMIN_USERNAME=ATMECE
+ADMIN_PASSWORD=change_this_password
+ADMIN_EMAIL=admin@example.com
 GOOGLE_API_KEY=
 ```
 
@@ -141,14 +144,16 @@ If port `3000` is already in use, set another port in `.env`, for example:
 PORT=3001
 ```
 
-## Default Admin Account
+## Admin Account
 
-The server creates a default admin account during initialization when the database is available:
+In development, the server creates an admin account from `ADMIN_USERNAME` and `ADMIN_PASSWORD` when the database is available. The local defaults are:
 
 ```text
 Username: ATMECE
-Password: student123
+Password: change_this_password
 ```
+
+Change these values before starting the app. Production does not create an admin account unless both variables are set.
 
 ## Important API Modules
 
@@ -165,7 +170,7 @@ Password: student123
 
 - MySQL must be running before using database-related features.
 - Uploaded certificates and local runtime files should not be committed.
-- Store local secrets only in `.env`.
+- Store local secrets only in `.env`; use a unique random `JWT_SECRET` and strong admin password for deployments.
 - This project was built as an academic prototype and can be further improved with stronger validation, deployment configuration, and production security practices.
 
 ## Future Enhancements
