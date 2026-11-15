@@ -1,5 +1,4 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -15,9 +14,9 @@ const PORT = process.env.PORT || 3000;
 
 
 app.use(cors());
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
-app.use(express.static('public'));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ limit: '1mb', extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
 
 
@@ -31,16 +30,15 @@ const socketIo = require('socket.io');
 const server = http.createServer(app);
 
 // Initialize Socket.io
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+const io = socketIo(server);
 
 // ============= AUTHENTICATION MIDDLEWARE =============
 
-const SECRET_KEY = 'your-secret-key-change-this-in-production-12345';
+const SECRET_KEY = process.env.JWT_SECRET || 'local-development-secret-change-before-deploying';
+
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32 || process.env.JWT_SECRET.includes('replace-with'))) {
+  throw new Error('Set a unique JWT_SECRET with at least 32 characters when NODE_ENV=production');
+}
 
 function loadLocalEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -80,7 +78,7 @@ const authenticateToken = (req, res, next) => {
   jwt.verify(token, SECRET_KEY, (err, user) => {
     if (err) {
       console.error('❌ JWT Error:', err.message);
-      return res.status(403).json({ success: false, message: 'Invalid token: ' + err.message });
+      return res.status(403).json({ success: false, message: 'Invalid or expired token' });
     }
     req.user = user;
     next();
@@ -380,52 +378,33 @@ app.get('/api/admin/stats', authenticateToken, async (req, res) => {
   }
 });
 
-// Store active users
-const activeUsers = new Map();
+// Authenticate chat connections and derive the sender from the verified token.
+io.use((socket, next) => {
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  if (!token) return next(new Error('Authentication required'));
 
-// Socket.io connection
-io.on('connection', (socket) => {
-  console.log('✅ User connected:', socket.id);
-
-  // User joins with their ID
-  socket.on('join', (userId) => {
-    activeUsers.set(userId, socket.id);
-    console.log('User joined:', userId);
-  });
-
-  // Send message
-  socket.on('send_message', (data) => {
-    const { to, from, message, timestamp } = data;
-    const recipientSocketId = activeUsers.get(to);
-    
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('receive_message', {
-        from,
-        message,
-        timestamp
-      });
-      console.log('Message sent:', from, '→', to);
+  jwt.verify(token, SECRET_KEY, (error, user) => {
+    if (error || !user || !Number.isInteger(Number(user.id))) {
+      return next(new Error('Invalid or expired token'));
     }
-  });
-
-  // User disconnect
-  socket.on('disconnect', () => {
-    for (let [userId, socketId] of activeUsers.entries()) {
-      if (socketId === socket.id) {
-        activeUsers.delete(userId);
-        console.log('User disconnected:', userId);
-        break;
-      }
-    }
+    socket.data.userId = Number(user.id);
+    next();
   });
 });
+
+io.on('connection', (socket) => {
+  const userId = socket.data.userId;
+  socket.join(String(userId));
+});
+
+
 
 // Database connection pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST || '127.0.0.1',
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASS || 'PUNEE13@work',
+  password: process.env.DB_PASS || '',
   database: process.env.DB_NAME || 'skillbridge',
   waitForConnections: true,
   connectionLimit: 10,
@@ -485,56 +464,6 @@ pool.getConnection()
     console.error('❌ Database connection failed:', err);
   });
 
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const connection = await pool.getConnection();
-    const [users] = await connection.query('SELECT * FROM users WHERE email = ?', [email]);
-
-    if (users.length === 0 || !await bcrypt.compare(password, users[0].password)) {
-      connection.release();
-      return res.json({ success: false, message: 'Invalid credentials' });
-    }
-
-    const user = users[0];
-    const token = jwt.sign({ id: user.id, email: user.email }, SECRET_KEY, { expiresIn: '7d' });
-    connection.release();
-
-    console.log('✅ Login success, token created with SECRET_KEY');
-    res.json({ success: true, token: token, data: { userId: user.id, email: user.email } });
-  } catch (error) {
-    res.json({ success: false, message: 'Login error: ' + error.message });
-  }
-});
-
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { email, phone, password, userType } = req.body;
-    const connection = await pool.getConnection();
-    const [existing] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
-
-    if (existing.length > 0) {
-      connection.release();
-      return res.json({ success: false, message: 'Email already registered' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const [result] = await connection.query(
-      'INSERT INTO users (email, phone, password, user_type, created_at) VALUES (?, ?, ?, ?, NOW())',
-      [email, phone, hashedPassword, userType || 'customer']
-    );
-
-    const token = jwt.sign({ id: result.insertId, email: email }, SECRET_KEY, { expiresIn: '7d' });
-    connection.release();
-
-    console.log('✅ Signup success, token created with SECRET_KEY');
-    res.json({ success: true, token: token, data: { userId: result.insertId, email: email } });
-  } catch (error) {
-    res.json({ success: false, message: 'Signup error: ' + error.message });
-  }
-});
-
-
 // ============= AUTH ROUTES =============
 
 // SIGNUP
@@ -543,12 +472,14 @@ app.post('/api/auth/register', async (req, res) => {
     const { email, phone, password, userType } = req.body;
     console.log('📝 Signup request:', email);
 
-    if (!email || !password) {
-      return res.json({ success: false, message: 'Email and password required' });
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || typeof password !== 'string' || password.length < 8 || password.length > 72) {
+      return res.status(400).json({ success: false, message: 'A valid email and password (8-72 characters) are required' });
     }
+    const normalizedUserType = ['customer', 'worker'].includes(userType) ? userType : 'customer';
 
     const connection = await pool.getConnection();
-    const [existing] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
+    const [existing] = await connection.query('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
 
     if (existing.length > 0) {
       connection.release();
@@ -558,13 +489,13 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const [result] = await connection.query(
       'INSERT INTO users (email, phone, password, user_type, created_at) VALUES (?, ?, ?, ?, NOW())',
-      [email, phone, hashedPassword, userType || 'customer']
+      [normalizedEmail, phone, hashedPassword, normalizedUserType]
     );
     connection.release();
 
     // Create token with SAME SECRET_KEY
     const token = jwt.sign(
-      { id: result.insertId, email: email },
+      { id: result.insertId, email: normalizedEmail },
       SECRET_KEY,
       { expiresIn: '7d' }
     );
@@ -574,11 +505,11 @@ app.post('/api/auth/register', async (req, res) => {
       success: true,
       message: 'User registered',
       token: token,
-      data: { userId: result.insertId, email: email }
+      data: { userId: result.insertId, email: normalizedEmail }
     });
   } catch (error) {
     console.error('❌ Signup error:', error);
-    res.json({ success: false, message: 'Signup error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Unable to register account' });
   }
 });
 
@@ -588,19 +519,20 @@ app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     console.log('🔐 Login request:', email);
 
-    if (!email || !password) {
-      return res.json({ success: false, message: 'Email and password required' });
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || typeof password !== 'string' || password.length > 72) {
+      return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
     const connection = await pool.getConnection();
-    const [users] = await connection.query('SELECT * FROM users WHERE email = ?', [email]);
+    const [users] = await connection.query('SELECT * FROM users WHERE email = ?', [normalizedEmail]);
 
     if (users.length === 0) {
       connection.release();
       return res.json({ success: false, message: 'Invalid email or password' });
     }
 
-    const user = users;
+    const user = users[0];
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
@@ -626,7 +558,7 @@ app.post('/api/auth/login', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Login error:', error);
-    res.json({ success: false, message: 'Login error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Unable to log in' });
   }
 });
 
@@ -1571,7 +1503,6 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
     // Emit socket event to receiver (if online) with translation metadata
     const insertedId = result.insertId;
     try {
-      const recipientSocketId = activeUsers.get(String(receiver_id));
       const payload = {
         id: insertedId,
         from: sender_id,
@@ -1582,12 +1513,8 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
         target_lang: target_lang,
         timestamp: new Date()
       };
-      if (recipientSocketId) {
-        io.to(recipientSocketId).emit('receive_message', payload);
-      }
-      // also notify sender socket if needed
-      const senderSocketId = activeUsers.get(String(sender_id));
-      if (senderSocketId) io.to(senderSocketId).emit('message_sent', payload);
+      io.to(String(receiver_id)).emit('receive_message', payload);
+      io.to(String(sender_id)).emit('message_sent', payload);
     } catch (e) {
       console.error('Socket emit error:', e.message || e);
     }
@@ -2186,21 +2113,22 @@ async function initializeAdmin() {
     
     console.log('✅ Admin tables created/verified');
     
-    // Check if admin already exists
-    const [existing] = await connection.query('SELECT id FROM admins WHERE username = ?', ['ATMECE']);
-    
-    if (existing.length === 0) {
-      // Create default admin account
-      const hashedPassword = await bcrypt.hash('student123', 10);
-      await connection.query(
-        'INSERT INTO admins (username, password, email, role) VALUES (?, ?, ?, ?)',
-        ['ATMECE', hashedPassword, 'admin@skillbridge.com', 'admin']
-      );
-      console.log('✅ Admin account created: ATMECE / student123');
+    const adminUsername = process.env.ADMIN_USERNAME || (process.env.NODE_ENV === 'production' ? '' : 'ATMECE');
+    const adminPassword = process.env.ADMIN_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'change_this_password');
+    if (!adminUsername || !adminPassword) {
+      console.warn('Admin account was not bootstrapped; set ADMIN_USERNAME and ADMIN_PASSWORD.');
     } else {
-      console.log('✅ Admin account already exists');
+      const [existing] = await connection.query('SELECT id FROM admins WHERE username = ?', [adminUsername]);
+      if (existing.length === 0) {
+        const hashedPassword = await bcrypt.hash(adminPassword, 10);
+        await connection.query(
+          'INSERT INTO admins (username, password, email, role) VALUES (?, ?, ?, ?)',
+          [adminUsername, hashedPassword, process.env.ADMIN_EMAIL || null, 'admin']
+        );
+        console.log('Admin account created:', adminUsername);
+      }
     }
-    
+
     connection.release();
   } catch (error) {
     console.error('⚠️ Admin initialization error:', error);
@@ -2218,17 +2146,5 @@ URL: http://localhost:${PORT}
 MySQL: configured from environment/defaults; check logs for connection status
 JWT Authentication Ready
 Socket.io Real-time Chat Ready
-Admin Account: ATMECE / student123
-  `);
-  return;
-  console.log(`
-╔════════════════════════════════════════╗
-║   🚀 SkillBridge Server Running        ║
-║   📡 http://localhost:${PORT}            ║
-║   🗄️  MySQL Connected                  ║
-║   🔑 JWT Authentication Ready          ║
-║   💬 Socket.io Real-time Chat Ready    ║
-║   👨‍💼 Admin Account: ATMECE / student123  ║
-╚════════════════════════════════════════╝
   `);
 });

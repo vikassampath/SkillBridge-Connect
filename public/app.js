@@ -373,8 +373,8 @@ async function handleSignup(e) {
     return;
   }
   
-  if (password.length < 6) {
-    alert('❌ Password must be at least 6 characters');
+  if (password.length < 8) {
+    alert('❌ Password must be at least 8 characters');
     return;
   }
   
@@ -3225,10 +3225,7 @@ function initializeChat() {
   const token = localStorage.getItem('authToken');
   if (!token) return;
 
-  socket = io(window.location.origin);
-  
-  const userId = localStorage.getItem('userId');
-  socket.emit('join', userId);
+  socket = io(window.location.origin, { auth: { token } });
 
   socket.on('receive_message', (data) => {
     console.log('📥 Message received:', data);
@@ -3981,16 +3978,6 @@ async function sendMessageToUser(message, sectionId) {
       const messagesDiv = sectionId === 'messages' ? document.getElementById('messages-content') : document.getElementById('chat-messages');
       if (messagesDiv) messagesDiv.scrollTop = messagesDiv.scrollHeight;
       
-      // Send via socket
-      if (socket) {
-        socket.emit('send_message', {
-          to: currentChatUserId,
-          from: localStorage.getItem('userId'),
-          message: message,
-          timestamp: new Date()
-        });
-      }
-      
       // Reload conversations
       loadConversations();
     }
@@ -4076,13 +4063,6 @@ async function sendMessage() {
       displayMessage(message, 'sent', new Date());
       input.value = '';
       
-      // Send via socket
-      socket.emit('send_message', {
-        to: currentChatUserId,
-        from: localStorage.getItem('userId'),
-        message: message,
-        timestamp: new Date()
-      });
     }
   } catch (error) {
     console.error('Error sending message:', error);
