@@ -84,6 +84,13 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
+
+const requireAdmin = (req, res, next) => {
+  if (!req.user || req.user.isAdmin !== true) {
+    return res.status(403).json({ success: false, message: 'Administrator access required' });
+  }
+  next();
+};
 // Submit feedback for a booking
 // Submit feedback for a booking
 app.post('/api/bookings/:bookingId/feedback', authenticateToken, async (req, res) => {
@@ -101,10 +108,10 @@ app.post('/api/bookings/:bookingId/feedback', authenticateToken, async (req, res
     });
 
     // ✅ Validate rating - STRICT TYPE CHECKING
-    let ratingInt = parseInt(rating);
+    let ratingInt = Number(rating);
     console.log('⚠️ Rating parsing: input =', rating, ', parsed =', ratingInt, ', isNaN =', isNaN(ratingInt));
     
-    if (isNaN(ratingInt)) {
+    if (!Number.isInteger(ratingInt)) {
       return res.json({ 
         success: false, 
         message: 'Rating must be a valid number. Received: ' + rating 
@@ -119,7 +126,7 @@ app.post('/api/bookings/:bookingId/feedback', authenticateToken, async (req, res
     }
 
     // ✅ Validate comment
-    if (!comment || !comment.trim() || comment.trim().length < 3) {
+    if (typeof comment !== 'string' || !comment.trim() || comment.trim().length < 3) {
       return res.json({ 
         success: false, 
         message: 'Comment must be at least 3 characters' 
@@ -155,11 +162,11 @@ app.post('/api/bookings/:bookingId/feedback', authenticateToken, async (req, res
       });
 
       // Check if booking is confirmed
-      if (bookingData.status !== 'confirmed') {
+      if (bookingData.status !== 'completed') {
         connection.release();
         return res.json({ 
           success: false, 
-          message: 'Only confirmed bookings can receive feedback. Current status: ' + bookingData.status 
+          message: 'Only completed bookings can receive feedback. Current status: ' + bookingData.status
         });
       }
 
@@ -259,7 +266,7 @@ app.get('/api/users/me', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const connection = await pool.getConnection();
     const [rows] = await connection.query(
-      `SELECT u.id, u.email, u.phone, u.user_type, w.id as worker_id, w.name as worker_name
+      `SELECT u.id, u.email, u.phone, u.user_type, u.preferred_language, w.id as worker_id, w.name as worker_name
        FROM users u
        LEFT JOIN workers w ON w.user_id = u.id
        WHERE u.id = ?`,
@@ -340,17 +347,9 @@ app.get('/api/bookings/worker/services', authenticateToken, async (req, res) => 
 });
 
 // Admin stats - requires user to be admin
-app.get('/api/admin/stats', authenticateToken, async (req, res) => {
+app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const userId = req.user.id;
     const connection = await pool.getConnection();
-
-    // Check admin
-    const [usersRows] = await connection.query('SELECT user_type FROM users WHERE id = ?', [userId]);
-    if (!usersRows || usersRows.length === 0 || usersRows[0].user_type !== 'admin') {
-      connection.release();
-      return res.status(403).json({ success: false, message: 'Forbidden' });
-    }
 
     const stats = {};
     const [[{count: usersCount}]] = await connection.query('SELECT COUNT(*) as count FROM users');
@@ -384,7 +383,7 @@ io.use((socket, next) => {
   if (!token) return next(new Error('Authentication required'));
 
   jwt.verify(token, SECRET_KEY, (error, user) => {
-    if (error || !user || !Number.isInteger(Number(user.id))) {
+    if (error || !user || user.isAdmin === true || !Number.isInteger(Number(user.id))) {
       return next(new Error('Invalid or expired token'));
     }
     socket.data.userId = Number(user.id);
@@ -519,13 +518,20 @@ app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     console.log('🔐 Login request:', email);
 
-    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || typeof password !== 'string' || password.length > 72) {
-      return res.status(400).json({ success: false, message: 'Email and password are required' });
+    const identifier = typeof email === 'string' ? email.trim() : '';
+    const normalizedEmail = identifier.toLowerCase();
+    const normalizedPhone = identifier.replace(/[\s()-]/g, '');
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail);
+    const isPhone = /^\+?[0-9]{7,15}$/.test(normalizedPhone);
+    if ((!isEmail && !isPhone) || typeof password !== 'string' || password.length > 72) {
+      return res.status(400).json({ success: false, message: 'A valid email or phone number and password are required' });
     }
 
     const connection = await pool.getConnection();
-    const [users] = await connection.query('SELECT * FROM users WHERE email = ?', [normalizedEmail]);
+    const [users] = await connection.query(
+      'SELECT * FROM users WHERE email = ? OR phone = ? OR phone = ? LIMIT 1',
+      [normalizedEmail, identifier, normalizedPhone]
+    );
 
     if (users.length === 0) {
       connection.release();
@@ -594,7 +600,7 @@ app.post('/api/admin/login', async (req, res) => {
 
     // Create token for admin
     const token = jwt.sign(
-      { id: admin.id, username: admin.username, isAdmin: true },
+      { adminId: admin.id, username: admin.username, isAdmin: true },
       SECRET_KEY,
       { expiresIn: '7d' }
     );
@@ -615,7 +621,7 @@ app.post('/api/admin/login', async (req, res) => {
 // ============= ADMIN DASHBOARD ROUTES =============
 
 // Get platform analytics
-app.get('/api/admin/analytics', authenticateToken, async (req, res) => {
+app.get('/api/admin/analytics', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     
@@ -665,11 +671,11 @@ app.get('/api/admin/analytics', authenticateToken, async (req, res) => {
 });
 
 // Get all disputes
-app.get('/api/admin/disputes', authenticateToken, async (req, res) => {
+app.get('/api/admin/disputes', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [disputes] = await connection.query(
-      `SELECT d.*, b.service_name, w.name as worker_name, u.email as user_email
+      `SELECT d.*, b.service_description as service_name, w.name as worker_name, u.email as user_email
        FROM disputes d
        LEFT JOIN bookings b ON d.booking_id = b.id
        LEFT JOIN workers w ON d.worker_id = w.id
@@ -686,7 +692,7 @@ app.get('/api/admin/disputes', authenticateToken, async (req, res) => {
 });
 
 // Resolve dispute
-app.put('/api/admin/disputes/:id', authenticateToken, async (req, res) => {
+app.put('/api/admin/disputes/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { resolution, status } = req.body;
@@ -706,7 +712,7 @@ app.put('/api/admin/disputes/:id', authenticateToken, async (req, res) => {
 });
 
 // Get all reviews
-app.get('/api/admin/reviews', authenticateToken, async (req, res) => {
+app.get('/api/admin/reviews', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [reviews] = await connection.query(
@@ -726,7 +732,7 @@ app.get('/api/admin/reviews', authenticateToken, async (req, res) => {
 });
 
 // Moderate review
-app.put('/api/admin/reviews/:id', authenticateToken, async (req, res) => {
+app.put('/api/admin/reviews/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { approved } = req.body;
@@ -746,11 +752,11 @@ app.put('/api/admin/reviews/:id', authenticateToken, async (req, res) => {
 });
 
 // Get commission/payment tracking
-app.get('/api/admin/commissions', authenticateToken, async (req, res) => {
+app.get('/api/admin/commissions', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [commissions] = await connection.query(
-      `SELECT c.*, w.name as worker_name, b.service_name
+      `SELECT c.*, w.name as worker_name, b.service_description as service_name
        FROM commissions c
        LEFT JOIN workers w ON c.worker_id = w.id
        LEFT JOIN bookings b ON c.booking_id = b.id
@@ -766,7 +772,7 @@ app.get('/api/admin/commissions', authenticateToken, async (req, res) => {
 });
 
 // Process commission payment
-app.put('/api/admin/commissions/:id', authenticateToken, async (req, res) => {
+app.put('/api/admin/commissions/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -808,14 +814,15 @@ app.post('/api/workers', authenticateToken, async (req, res) => {
     console.log('📝 Worker registration:', { user_id, name, occupation });
 
     // Validation
-    if (!name || !occupation || !hourly_rate || !location) {
+    const rate = Number(hourly_rate);
+    if (!name || !occupation || !location || !Number.isFinite(rate)) {
       return res.status(400).json({ 
         success: false, 
         message: 'Missing required fields: name, occupation, hourly_rate, location' 
       });
     }
 
-    if (hourly_rate < 50 || hourly_rate > 5000) {
+    if (rate < 50 || rate > 5000) {
       return res.status(400).json({ 
         success: false, 
         message: 'Hourly rate must be between 50 and 5000' 
@@ -850,7 +857,7 @@ app.post('/api/workers', authenticateToken, async (req, res) => {
           occupation,
           experience || '1',
           JSON.stringify(specialties || []),
-          hourly_rate,
+          rate,
           available_hours || 'flexible',
           location,
           travel_radius || '5',
@@ -859,6 +866,8 @@ app.post('/api/workers', authenticateToken, async (req, res) => {
           certifications || ''
         ]
       );
+
+      await connection.query('UPDATE users SET user_type = ? WHERE id = ?', ['worker', user_id]);
 
       console.log('✅ Worker registered with ID:', result.insertId);
 
@@ -898,16 +907,25 @@ app.post('/api/ratings', authenticateToken, async (req, res) => {
     const { worker_id, rating, review } = req.body;
     const user_id = req.user.id;
 
-    if (!worker_id || !rating) {
+    if (!worker_id || rating === undefined || rating === null || rating === '') {
       return res.json({ success: false, message: 'Worker ID and rating required' });
     }
 
     // Validate 1-5
-    if (rating < 1 || rating > 5) {
+    if (!Number.isInteger(Number(rating)) || Number(rating) < 1 || Number(rating) > 5) {
       return res.json({ success: false, message: 'Rating must be between 1 and 5' });
     }
 
     const connection = await pool.getConnection();
+
+    const [completedBookings] = await connection.query(
+      "SELECT id FROM bookings WHERE user_id = ? AND worker_id = ? AND status = 'completed' LIMIT 1",
+      [user_id, worker_id]
+    );
+    if (completedBookings.length === 0) {
+      connection.release();
+      return res.status(403).json({ success: false, message: 'Only customers with a completed booking can leave a rating' });
+    }
 
     // Check if rating already exists for this user/worker
     const [existing] = await connection.query(
@@ -918,12 +936,12 @@ app.post('/api/ratings', authenticateToken, async (req, res) => {
     if (existing.length > 0) {
       await connection.query(
         'UPDATE rating SET rating = ?, review = ? WHERE user_id = ? AND worker_id = ?',
-        [rating, review || '', user_id, worker_id]
+        [Number(rating), typeof review === 'string' ? review.slice(0, 2000) : '', user_id, worker_id]
       );
     } else {
       await connection.query(
         'INSERT INTO rating (worker_id, user_id, rating, review, created_at) VALUES (?, ?, ?, ?, NOW())',
-        [worker_id, user_id, rating, review || '']
+        [worker_id, user_id, Number(rating), typeof review === 'string' ? review.slice(0, 2000) : '']
       );
     }
 
@@ -966,7 +984,7 @@ app.get('/api/ratings/:workerId', async (req, res) => {
     const connection = await pool.getConnection();
     const [ratings] = await connection.query(
       `SELECT r.*, u.email as user_email 
-       FROM ratings r 
+       FROM rating r
        LEFT JOIN users u ON r.user_id = u.id 
        WHERE r.worker_id = ? 
        ORDER BY r.created_at DESC`,
@@ -993,7 +1011,7 @@ app.get('/api/ratings/:workerId/user', authenticateToken, async (req, res) => {
 
     const connection = await pool.getConnection();
     const [ratings] = await connection.query(
-      'SELECT * FROM ratings WHERE worker_id = ? AND user_id = ?',
+      'SELECT * FROM rating WHERE worker_id = ? AND user_id = ?',
       [workerId, userId]
     );
     connection.release();
@@ -1014,7 +1032,7 @@ app.get('/api/workers', async (req, res) => {
   try {
     const targetLang = req.query.lang || null;
     const { occupation, location, min_rate, max_rate, sort } = req.query;
-    let query = 'SELECT * FROM workers WHERE 1=1';
+    let query = 'SELECT w.*, w.work_areas AS service_areas FROM workers w WHERE 1=1';
     const params = [];
 
     if (occupation) {
@@ -1022,7 +1040,7 @@ app.get('/api/workers', async (req, res) => {
       params.push(occupation);
     }
     if (location) {
-      query += ' AND (LOWER(location) LIKE LOWER(?) OR LOWER(service_areas) LIKE LOWER(?))';
+      query += ' AND (LOWER(location) LIKE LOWER(?) OR LOWER(work_areas) LIKE LOWER(?))';
       params.push('%' + location + '%', '%' + location + '%');
     }
     if (min_rate) {
@@ -1119,7 +1137,7 @@ app.get('/api/workers/:id', async (req, res) => {
   try {
     const targetLang = req.query.lang || null;
     const connection = await pool.getConnection();
-    const [workers] = await connection.query('SELECT * FROM workers WHERE id = ?', [req.params.id]);
+    const [workers] = await connection.query('SELECT w.*, w.work_areas AS service_areas FROM workers w WHERE w.id = ?', [req.params.id]);
     if (workers.length === 0) {
       connection.release();
       return res.json({ success: false, message: 'Worker not found' });
@@ -1162,7 +1180,7 @@ app.get('/api/semantic-search', async (req, res) => {
     }
 
     const connection = await pool.getConnection();
-    const [workers] = await connection.query('SELECT * FROM workers');
+    const [workers] = await connection.query('SELECT w.*, w.work_areas AS service_areas FROM workers w');
     connection.release();
 
     if (!workers || workers.length === 0) {
@@ -1360,12 +1378,15 @@ app.post('/api/certificates', authenticateToken, upload.single('certificate_file
       return res.json({ success: false, message: 'Certificate name and PDF file required' });
     }
 
-    // Use worker_id from request body if provided, otherwise use user_id
-    const actualWorkerId = worker_id || user_id;
-
     const connection = await pool.getConnection();
 
     try {
+      const [workers] = await connection.query('SELECT id FROM workers WHERE user_id = ?', [user_id]);
+      if (workers.length === 0 || (worker_id && Number(worker_id) !== Number(workers[0].id))) {
+        return res.status(403).json({ success: false, message: 'A worker profile is required to upload certificates' });
+      }
+      const actualWorkerId = workers[0].id;
+
       await connection.query(
         `INSERT INTO certificates (worker_id, certificate_name, description, file_name, file_path, file_size) 
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -1380,11 +1401,11 @@ app.post('/api/certificates', authenticateToken, upload.single('certificate_file
       );
 
       // Update worker certificate count
-      const [result] = await connection.query(
+      const [countRows] = await connection.query(
         `SELECT COUNT(*) as count FROM certificates WHERE worker_id = ?`,
         [actualWorkerId]
       );
-      const certCount = result.count;
+      const certCount = countRows[0].count;
 
       await connection.query(
         `UPDATE workers SET certificate_count = ? WHERE id = ?`,
@@ -1842,6 +1863,17 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       return res.json({ success: false, message: 'Unauthorized - Only worker can accept/reject' });
     }
 
+    const isCustomer = Number(bookingData.user_id) === Number(userId);
+    const isWorker = Number(bookingData.worker_user_id) === Number(userId);
+    const allowedTransition =
+      ((status === 'confirmed' || status === 'rejected') && isWorker && bookingData.status === 'pending') ||
+      (status === 'completed' && isWorker && bookingData.status === 'confirmed') ||
+      (status === 'cancelled' && isCustomer && ['pending', 'confirmed'].includes(bookingData.status));
+    if (!allowedTransition) {
+      connection.release();
+      return res.status(isCustomer || isWorker ? 409 : 403).json({ success: false, message: 'You cannot make this booking status change' });
+    }
+
     // Update status
     await connection.query(
       'UPDATE bookings SET status = ? WHERE id = ?',
@@ -1870,7 +1902,7 @@ app.get('/api/bookings/:id', authenticateToken, async (req, res) => {
 
     const connection = await pool.getConnection();
     const [bookings] = await connection.query(
-      `SELECT b.*, w.name as worker_name, w.occupation, w.phone as worker_phone, w.email as worker_email,
+      `SELECT b.*, w.user_id as worker_user_id, w.name as worker_name, w.occupation, w.phone as worker_phone, w.email as worker_email,
               u.email as customer_email, u.phone as customer_phone
        FROM bookings b
        JOIN workers w ON b.worker_id = w.id
@@ -1885,7 +1917,12 @@ app.get('/api/bookings/:id', authenticateToken, async (req, res) => {
       return res.json({ success: false, message: 'Booking not found' });
     }
 
-    res.json({ success: true, data: bookings[0] });
+    const booking = bookings[0];
+    if (Number(booking.user_id) !== Number(req.user.id) && Number(booking.worker_user_id) !== Number(req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    res.json({ success: true, data: booking });
   } catch (error) {
     console.error('❌ Get booking error:', error);
     res.json({ success: false, message: 'Error: ' + error.message });
@@ -1928,6 +1965,26 @@ app.patch('/api/bookings/:id', authenticateToken, async (req, res) => {
     }
 
     const connection = await pool.getConnection();
+    const [rows] = await connection.query(
+      `SELECT b.user_id, b.status, w.user_id AS worker_user_id
+       FROM bookings b JOIN workers w ON w.id = b.worker_id WHERE b.id = ?`,
+      [bookingId]
+    );
+    if (!rows.length) {
+      connection.release();
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    const booking = rows[0];
+    const isCustomer = Number(booking.user_id) === Number(req.user.id);
+    const isWorker = Number(booking.worker_user_id) === Number(req.user.id);
+    const allowed =
+      ((status === 'confirmed' || status === 'rejected') && isWorker && booking.status === 'pending') ||
+      (status === 'completed' && isWorker && booking.status === 'confirmed') ||
+      (status === 'cancelled' && isCustomer && ['pending', 'confirmed'].includes(booking.status));
+    if (!allowed) {
+      connection.release();
+      return res.status(isCustomer || isWorker ? 409 : 403).json({ success: false, message: 'You cannot make this booking status change' });
+    }
     await connection.query('UPDATE bookings SET status = ? WHERE id = ?', [status, bookingId]);
     connection.release();
 
@@ -1957,10 +2014,11 @@ app.delete('/api/certificates/:certificateId', authenticateToken, async (req, re
         return res.json({ success: false, message: 'Certificate not found' });
       }
 
-      const cert = certs;
+      const cert = certs[0];
 
       // Check if user owns this certificate
-      if (cert.worker_id !== userId) {
+      const [owners] = await connection.query('SELECT user_id FROM workers WHERE id = ?', [cert.worker_id]);
+      if (!owners.length || Number(owners[0].user_id) !== Number(userId)) {
         return res.json({ success: false, message: 'Unauthorized' });
       }
 
@@ -1977,11 +2035,11 @@ app.delete('/api/certificates/:certificateId', authenticateToken, async (req, re
       }
 
       // Update certificate count
-      const [result] = await connection.query(
+      const [countRows] = await connection.query(
         `SELECT COUNT(*) as count FROM certificates WHERE worker_id = ?`,
         [cert.worker_id]
       );
-      const certCount = result.count;
+      const certCount = countRows[0].count;
 
       await connection.query(
         `UPDATE workers SET certificate_count = ? WHERE id = ?`,
@@ -2007,13 +2065,15 @@ app.delete('/api/certificates/:certificateId', authenticateToken, async (req, re
 // Serve uploaded files (with security check)
 app.get('/uploads/certificates/:filename', (req, res) => {
   const filename = req.params.filename;
-  const filepath = path.join(__dirname, 'uploads/certificates', filename);
-
-  // Prevent directory traversal
-  if (!filepath.startsWith(path.join(__dirname, 'uploads/certificates'))) {
+  if (!/^[A-Za-z0-9._-]+\.pdf$/i.test(filename)) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
+  const uploadsRoot = path.resolve(__dirname, 'uploads/certificates');
+  const filepath = path.resolve(uploadsRoot, filename);
+  if (path.dirname(filepath) !== uploadsRoot) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
   res.download(filepath);
 });
 
@@ -2090,6 +2150,24 @@ async function initializeAdmin() {
       await connection.query(`ALTER TABLE users ADD COLUMN preferred_language VARCHAR(10) DEFAULT 'en'`);
     } catch (e) {
       // already exists or users table missing
+    }
+
+    try {
+      await connection.query(`ALTER TABLE users ADD COLUMN user_type VARCHAR(20) NOT NULL DEFAULT 'customer'`);
+    } catch (e) {
+      // already exists or users table missing
+    }
+
+    try {
+      await connection.query(`ALTER TABLE workers ADD COLUMN certificate_count INT NOT NULL DEFAULT 0`);
+    } catch (e) {
+      // already exists or workers table missing
+    }
+
+    try {
+      await connection.query(`ALTER TABLE bookings ADD COLUMN feedback_given BOOLEAN NOT NULL DEFAULT FALSE`);
+    } catch (e) {
+      // already exists or bookings table missing
     }
 
     try {

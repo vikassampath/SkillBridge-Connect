@@ -1,7 +1,6 @@
 -- SkillBridge Connect Database Schema
 CREATE DATABASE IF NOT EXISTS skillbridge;
 USE skillbridge;
-USE skillbridge;
 -- ALTER TABLE workers ADD COLUMN service_areas LONGTEXT AFTER travel_radius;
 -- Users table for authentication
 -- ALTER TABLE workers ADD COLUMN rating DECIMAL(2,1) DEFAULT 0.0;
@@ -11,6 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(255) UNIQUE NOT NULL,
   phone VARCHAR(20),
   password VARCHAR(255) NOT NULL,
+  user_type VARCHAR(20) NOT NULL DEFAULT 'customer',
+  preferred_language VARCHAR(10) NOT NULL DEFAULT 'en',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 -- Workers table for storing worker profiles
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS workers (
   verified BOOLEAN DEFAULT FALSE,
   rating DECIMAL(3, 2) DEFAULT 0.0,
   reviews_count INT DEFAULT 0,
+  certificate_count INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS rating (
     AND rating <= 5
   ),
   review TEXT,
+  approved BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -70,6 +73,11 @@ CREATE TABLE IF NOT EXISTS messages (
   sender_id INT NOT NULL,
   receiver_id INT NOT NULL,
   message TEXT NOT NULL,
+  original_message TEXT,
+  translated_message TEXT,
+  source_lang VARCHAR(10),
+  target_lang VARCHAR(10),
+  context_summary TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   is_read BOOLEAN DEFAULT FALSE,
   FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -85,15 +93,14 @@ CREATE TABLE IF NOT EXISTS bookings (
   booking_date DATE NOT NULL,
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
-  status ENUM('pending', 'confirmed', 'completed', 'cancelled') DEFAULT 'pending',
+  status ENUM('pending', 'confirmed', 'completed', 'cancelled', 'rejected') DEFAULT 'pending',
   service_description TEXT,
   total_price DECIMAL(10, 2),
+  feedback_given BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
 );
-ALTER TABLE bookings
-ADD COLUMN feedback_given BOOLEAN DEFAULT 0;
 -- CREATE INDEX idx_booking_date ON bookings(booking_date);
 -- CREATE INDEX idx_booking_status ON bookings(status);
 -- Add certificate count column to workers if not exists
@@ -141,20 +148,6 @@ CREATE TABLE IF NOT EXISTS commissions (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
 );
-SELECT *
-FROM users;
-SELECT *
-FROM workers;
-select *
-from certificates;
-select *
-from rating;
-select *
-from messages;
-select *
-from bookings;
-DESC bookings;
-DESC rating;
 -- Create indexes for better performance
 -- CREATE INDEX idx_occupation ON workers(occupation);
 -- CREATE INDEX idx_location ON workers(location);
