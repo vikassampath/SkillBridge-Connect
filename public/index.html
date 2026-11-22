@@ -576,7 +576,7 @@
                             </select>
                         </div>
 
-                        <button class="btn btn--primary search-btn" onclick="displayAllWorkers()">
+                        <button class="btn btn--primary search-btn" onclick="resetWorkerFilters()">
                             <i class="fas fa-redo"></i> Reset
                         </button>
                     </div>
@@ -816,8 +816,6 @@
     <script src="app.js"></script>
     <!-- Socket.io Client -->
 <script src="/socket.io/socket.io.js"></script>
-<!-- Google Maps (replace YOUR_API_KEY) -->
-<script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=places"></script>
 <script>
 // Initialize chat and bookings on page load
 document.addEventListener('DOMContentLoaded', function() {

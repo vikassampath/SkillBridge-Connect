@@ -2445,7 +2445,8 @@ function contactWorker(workerId) {
 let activeFilters = {
   occupation: '',
   location: '',
-  budget: ''
+  budget: '',
+  searchTerm: ''
 };
 
 function applyAllFilters() {
@@ -2453,6 +2454,14 @@ function applyAllFilters() {
   
   filteredWorkers = allWorkersData.filter(worker => {
     let matches = true;
+
+    if (activeFilters.searchTerm) {
+      const term = activeFilters.searchTerm.toLowerCase();
+      const searchable = [worker.name, worker.occupation, worker.location, worker.description]
+        .concat(parseJSON(worker.specialties))
+        .filter(Boolean).join(' ').toLowerCase();
+      matches = matches && searchable.includes(term);
+    }
 
     // Filter by occupation
     if (activeFilters.occupation && activeFilters.occupation !== '') {
@@ -2488,6 +2497,15 @@ function applyAllFilters() {
   console.log('✅ Filtered workers count:', filteredWorkers.length);
   displayAllWorkers();
   updateResultsCount();
+}
+
+function resetWorkerFilters() {
+  activeFilters = { occupation: '', location: '', budget: '', searchTerm: '' };
+  ['search-input', 'search-occupation', 'search-location', 'search-budget'].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.value = '';
+  });
+  applyAllFilters();
 }
 
 // ============= INDIVIDUAL FILTER FUNCTIONS =============
@@ -2643,87 +2661,29 @@ function filterWorkersByOccupation(occupation) {
   console.log('🔍 Filtering by occupation:', occupation);
   console.log('Total workers:', allWorkersData.length);
   
-  if (!occupation || occupation === '') {
-    filteredWorkers = [...allWorkersData];
-  } else {
-    filteredWorkers = allWorkersData.filter(worker => {
-      const workerOcc = (worker.occupation || '').toLowerCase();
-      const selectedOcc = occupation.toLowerCase();
-      return workerOcc === selectedOcc;
-    });
-  }
-
-  console.log('Filtered count:', filteredWorkers.length);
-  displayAllWorkers();
-  updateResultsCount();
+  activeFilters.occupation = occupation || '';
+  applyAllFilters();
 }
 
 function filterWorkersByLocation(location) {
   console.log('🔍 Filtering by location:', location);
   
-  if (!location || location === '') {
-    filteredWorkers = [...allWorkersData];
-  } else {
-    filteredWorkers = allWorkersData.filter(worker => {
-      const workerLoc = (worker.location || '').toLowerCase();
-      const selectedLoc = location.toLowerCase();
-      return workerLoc.includes(selectedLoc) || selectedLoc.includes(workerLoc);
-    });
-  }
-
-  console.log('Filtered count:', filteredWorkers.length);
-  displayAllWorkers();
-  updateResultsCount();
+  activeFilters.location = location || '';
+  applyAllFilters();
 }
 
 function handleBudgetFilter(budgetRange) {
   console.log('🔍 Filtering by budget:', budgetRange);
   
-  if (!budgetRange || budgetRange === '') {
-    filteredWorkers = [...allWorkersData];
-  } else if (budgetRange === '500') {
-    filteredWorkers = allWorkersData.filter(w => {
-      const rate = parseFloat(w.hourly_rate);
-      return rate >= 500;
-    });
-  } else {
-    const [min, max] = budgetRange.split('-');
-    const minRate = parseInt(min);
-    const maxRate = parseInt(max);
-    filteredWorkers = allWorkersData.filter(w => {
-      const rate = parseFloat(w.hourly_rate);
-      return rate >= minRate && rate <= maxRate;
-    });
-  }
-
-  console.log('Filtered count:', filteredWorkers.length);
-  displayAllWorkers();
-  updateResultsCount();
+  activeFilters.budget = budgetRange || '';
+  applyAllFilters();
 }
 
 function searchWorkers(searchTerm) {
   console.log('🔍 Searching for:', searchTerm);
   
-  if (!searchTerm || searchTerm.trim() === '') {
-    filteredWorkers = [...allWorkersData];
-  } else {
-    const term = searchTerm.toLowerCase().trim();
-    filteredWorkers = allWorkersData.filter(worker => {
-      const name = (worker.name || '').toLowerCase();
-      const occupation = (worker.occupation || '').toLowerCase();
-      const location = (worker.location || '').toLowerCase();
-      const description = (worker.description || '').toLowerCase();
-      
-      return name.includes(term) || 
-             occupation.includes(term) || 
-             location.includes(term) || 
-             description.includes(term);
-    });
-  }
-
-  console.log('Filtered count:', filteredWorkers.length);
-  displayAllWorkers();
-  updateResultsCount();
+  activeFilters.searchTerm = (searchTerm || '').trim();
+  applyAllFilters();
 }
 
 function updateResultsCount() {
