@@ -126,6 +126,12 @@ GOOGLE_API_KEY=
 npm start
 ```
 
+Run a syntax check before starting or committing changes:
+
+```bash
+npm run check
+```
+
 For development mode:
 
 ```bash
@@ -169,6 +175,7 @@ Change these values before starting the app. Production does not create an admin
 ## Notes
 
 - MySQL must be running before using database-related features.
+- The server can serve the frontend while MySQL is unavailable, but authentication and other database-backed features will not work until MySQL is configured and running.
 - Uploaded certificates and local runtime files should not be committed.
 - Store local secrets only in `.env`; use a unique random `JWT_SECRET` and strong admin password for deployments.
 - This project was built as an academic prototype and can be further improved with stronger validation, deployment configuration, and production security practices.
